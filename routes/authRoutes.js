@@ -6,11 +6,14 @@ const { generateToken, protect } = require('../middleware/auth');
 
 // ── Email Transporter (Gmail) ──
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true,
   auth: {
-    user: process.env.GMAIL_USER,   // velanfoodstn@gmail.com
-    pass: process.env.GMAIL_PASS    // Gmail App Password (16 digits)
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_PASS
   }
+});
 });
 
 // ── OTP Store (memory) ──
