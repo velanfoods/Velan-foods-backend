@@ -14,7 +14,6 @@ const transporter = nodemailer.createTransport({
     pass: process.env.GMAIL_PASS
   }
 });
-});
 
 // ── OTP Store (memory) ──
 const otpStore = {}; // { email: { otp, expiresAt } }
