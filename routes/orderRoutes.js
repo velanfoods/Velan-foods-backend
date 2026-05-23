@@ -1,4 +1,30 @@
 const express = require('express');
+const axios = require('axios');
+
+// ── Fast2SMS - Order Confirmation SMS ──
+async function sendOrderSMS(phone, orderDetails) {
+  try {
+    const { trackingId, totalAmount, paymentMethod, itemCount } = orderDetails;
+    const message = `Velan Foods: உங்கள் ஆர்டர் confirm! ID: ${trackingId}, ${itemCount} பொருட்கள், மொத்தம் Rs.${totalAmount}, ${paymentMethod === 'cod' ? 'COD' : 'Online Payment'}. நன்றி! -Velan Foods`;
+    
+    await axios.post('https://www.fast2sms.com/dev/bulkV2', {
+      route: 'q',
+      message: message,
+      language: 'english',
+      flash: 0,
+      numbers: phone
+    }, {
+      headers: {
+        'authorization': process.env.FAST2SMS_KEY,
+        'Content-Type': 'application/json'
+      }
+    });
+    console.log('Order SMS sent to:', phone);
+  } catch (err) {
+    console.error('SMS error (non-critical):', err.message);
+    // SMS தோல்வியுற்றாலும் order continue ஆகும்
+  }
+}
 const router = express.Router();
 const Order = require('../models/Order');
 const Product = require('../models/Product');
@@ -64,6 +90,18 @@ router.post('/', protect, async (req, res) => {
     // Stock குறைக்கவும்
     for (const item of items) {
       await Product.findByIdAndUpdate(item.product, { $inc: { stock: -item.qty } });
+    }
+
+    // Order confirmation SMS அனுப்பு
+    const trackingId = 'VF' + order._id.toString().slice(-6).toUpperCase();
+    const phone = shippingAddress?.phone;
+    if (phone && process.env.FAST2SMS_KEY) {
+      await sendOrderSMS(phone, {
+        trackingId,
+        totalAmount,
+        paymentMethod,
+        itemCount: orderItems.length
+      });
     }
 
     res.status(201).json({
@@ -174,3 +212,4 @@ router.put('/:id/status', protect, adminOnly, async (req, res) => {
 });
 
 module.exports = router;
+                                          
