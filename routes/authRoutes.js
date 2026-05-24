@@ -1,49 +1,68 @@
 const express = require('express');
 const router = express.Router();
-const nodemailer = require('nodemailer');
+const https = require('https');
 const User = require('../models/User');
 const { generateToken, protect } = require('../middleware/auth');
 
-// ── Email Transporter (Gmail) ──
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,   // velanfoodstn@gmail.com
-    pass: process.env.GMAIL_PASS    // Gmail App Password (16 digits)
-  }
-});
+// ── OTP Store ──
+const otpStore = {};
 
-// ── OTP Store (memory) ──
-const otpStore = {}; // { email: { otp, expiresAt } }
-
-// ── OTP அனுப்பு (Email) ──
+// ── Brevo HTTP API மூலம் Email அனுப்பு ──
 async function sendEmailOTP(email, otp) {
-  await transporter.sendMail({
-    from: `"Velan Foods 🌾" <${process.env.GMAIL_USER}>`,
-    to: email,
+  const data = JSON.stringify({
+    sender: { name: 'Velan Foods', email: 'velanfoodstn@gmail.com' },
+    to: [{ email: email }],
     subject: 'Velan Foods – உங்கள் OTP குறியீடு',
-    html: `
+    htmlContent: `
       <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#FBF5EC;border-radius:16px">
         <div style="text-align:center;margin-bottom:24px">
-          <div style="background:#E8821A;width:60px;height:60px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:28px">🌾</div>
-          <h2 style="color:#4A2C0A;font-size:22px;margin:12px 0 4px">Velan Foods</h2>
+          <h2 style="color:#4A2C0A">🌾 Velan Foods</h2>
           <p style="color:#7A5C44;font-size:13px">இயற்கை • தரம் • சுவை</p>
         </div>
         <div style="background:#fff;border-radius:12px;padding:28px;text-align:center">
-          <p style="color:#4A2C0A;font-size:16px;margin-bottom:8px">உங்கள் OTP குறியீடு:</p>
+          <p style="color:#4A2C0A;font-size:16px">உங்கள் OTP குறியீடு:</p>
           <div style="background:#FDF0DC;border:2px dashed #E8821A;border-radius:12px;padding:20px;margin:16px 0">
             <span style="font-size:40px;font-weight:900;letter-spacing:10px;color:#4A2C0A">${otp}</span>
           </div>
           <p style="color:#7A5C44;font-size:13px">இந்த OTP <strong>10 நிமிடங்களில்</strong> expire ஆகும்</p>
-          <p style="color:#C0392B;font-size:12px;margin-top:8px">இந்த OTP-ஐ யாரிடமும் பகிர வேண்டாம்</p>
+          <p style="color:#C0392B;font-size:12px">இந்த OTP-ஐ யாரிடமும் பகிர வேண்டாம்</p>
         </div>
-        <p style="text-align:center;color:#7A5C44;font-size:12px;margin-top:16px">© 2025 Velan Foods. அனைத்து உரிமைகளும் பாதுகாக்கப்பட்டவை.</p>
       </div>
     `
   });
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.brevo.com',
+      path: '/v3/smtp/email',
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': process.env.BREVO_API_KEY,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(data)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', (chunk) => body += chunk);
+      res.on('end', () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(body);
+        } else {
+          reject(new Error(`Brevo error: ${res.statusCode} - ${body}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
 }
 
-// POST /api/auth/send-otp – OTP அனுப்பு
+// POST /api/auth/send-otp
 router.post('/send-otp', async (req, res) => {
   try {
     const { email } = req.body;
@@ -53,28 +72,26 @@ router.post('/send-otp', async (req, res) => {
     if (exists) return res.status(400).json({ success: false, message: 'இந்த மின்னஞ்சல் ஏற்கனவே பதிவாகியுள்ளது' });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    otpStore[email] = { otp, expiresAt: Date.now() + 10 * 60 * 1000 }; // 10 min
+    otpStore[email] = { otp, expiresAt: Date.now() + 10 * 60 * 1000 };
 
     await sendEmailOTP(email, otp);
-
     res.json({ success: true, message: `OTP ${email}-க்கு அனுப்பப்பட்டது` });
   } catch (err) {
-    console.error('OTP email error:', err);
+    console.error('OTP error:', err);
     res.status(500).json({ success: false, message: 'OTP அனுப்ப முடியவில்லை: ' + err.message });
   }
 });
 
-// POST /api/auth/register – OTP verify செய்து register
+// POST /api/auth/register
 router.post('/register', async (req, res) => {
   try {
     const { name, email, phone, password, otp } = req.body;
 
-    // OTP சரிபார்க்கவும்
     const stored = otpStore[email];
-    if (!stored) return res.status(400).json({ success: false, message: 'OTP அனுப்பவில்லை — மீண்டும் முயற்சிக்கவும்' });
+    if (!stored) return res.status(400).json({ success: false, message: 'OTP அனுப்பவில்லை' });
     if (Date.now() > stored.expiresAt) {
       delete otpStore[email];
-      return res.status(400).json({ success: false, message: 'OTP காலாவதியானது — மீண்டும் அனுப்பவும்' });
+      return res.status(400).json({ success: false, message: 'OTP காலாவதியானது' });
     }
     if (stored.otp !== otp) return res.status(400).json({ success: false, message: 'தவறான OTP' });
 
@@ -82,7 +99,7 @@ router.post('/register', async (req, res) => {
     if (exists) return res.status(400).json({ success: false, message: 'இந்த மின்னஞ்சல் ஏற்கனவே பதிவாகியுள்ளது' });
 
     const user = await User.create({ name, email, phone, password });
-    delete otpStore[email]; // OTP use ஆனது, delete செய்
+    delete otpStore[email];
 
     res.status(201).json({
       success: true,
@@ -95,7 +112,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// POST /api/auth/login – உள்நுழைவு
+// POST /api/auth/login
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -148,4 +165,3 @@ router.post('/address', protect, async (req, res) => {
 });
 
 module.exports = router;
-    
